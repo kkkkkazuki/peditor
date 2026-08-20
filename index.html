@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ページ編集PDF</title>
+<style>
+  :root{
+    --ink:#101317;
+    --chrome:#181c22;
+    --panel:#1d222a;
+    --edge:#2c333d;
+    --text:#e7eaef;
+    --muted:#8d95a2;
+    --accent:#ffb020;
+    --accent-dim:#a06d10;
+    --paper:#ffffff;
+    --ui: "Inter", system-ui, -apple-system, "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--ink);color:var(--text);font-family:var(--ui);
+    font-size:13px;display:flex;flex-direction:column;overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---- toolbar ---- */
+  .bar{
+    flex:0 0 auto;display:flex;align-items:center;gap:6px;
+    padding:8px 10px;background:var(--chrome);border-bottom:1px solid var(--edge);
+    flex-wrap:wrap;
+  }
+  .bar .sep{width:1px;height:20px;background:var(--edge);margin:0 4px}
+  .bar .title{
+    font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+    color:var(--muted);text-transform:uppercase;margin-right:6px;
+  }
+  button{
+    font-family:inherit;font-size:12px;color:var(--text);
+    background:var(--panel);border:1px solid var(--edge);border-radius:6px;
+    padding:6px 10px;cursor:pointer;line-height:1;white-space:nowrap;
+  }
+  button:hover:not(:disabled){border-color:#404a57;background:#232935}
+  button:disabled{opacity:.35;cursor:default}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#20180a;font-weight:600}
+  button.primary:hover:not(:disabled){background:#ffc040;border-color:#ffc040}
+
+  /* ---- stage ---- */
+  .stage{flex:1 1 auto;display:flex;min-height:0}
+
+  #rail{
+    flex:0 0 232px;background:var(--chrome);border-right:1px solid var(--edge);
+    display:flex;flex-direction:column;min-height:0;
+  }
+  .rail-head{
+    padding:8px 10px;border-bottom:1px solid var(--edge);
+    display:flex;justify-content:space-between;align-items:center;
+    font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--muted);
+  }
+  #thumbs{
+    flex:1 1 auto;overflow-y:auto;padding:10px;
+    display:grid;grid-template-columns:repeat(2,1fr);gap:10px 8px;align-content:start;
+  }
+
+  .thumb{position:relative;cursor:pointer;user-select:none}
+  .thumb .sheet{
+    background:var(--paper);border-radius:2px;overflow:hidden;
+    box-shadow:0 1px 3px rgba(0,0,0,.6);
+    aspect-ratio:1/1.414;display:flex;align-items:center;justify-content:center;
+    outline:2px solid transparent;outline-offset:2px;transition:outline-color .08s;
+  }
+  .thumb .sheet img{max-width:100%;max-height:100%;display:block}
+  .thumb.sel .sheet{outline-color:var(--accent)}
+  .thumb.cur .sheet{box-shadow:0 0 0 1px var(--accent-dim),0 2px 8px rgba(0,0,0,.7)}
+  .thumb.dragging{opacity:.35}
+  .thumb .num{
+    display:flex;align-items:baseline;gap:5px;justify-content:center;
+    font-family:var(--mono);font-size:11px;color:var(--muted);padding-top:5px;
+  }
+  .thumb.sel .num .pos{color:var(--accent)}
+  .thumb .pos{color:var(--text)}
+  .thumb .orig{font-size:9px;opacity:.65}
+  .thumb .rot{font-size:9px;color:var(--accent-dim)}
+  .thumb .drop{
+    position:absolute;top:0;bottom:18px;width:3px;background:var(--accent);border-radius:2px;
+    display:none;
+  }
+  .thumb.drop-before .drop.before{display:block;left:-6px}
+  .thumb.drop-after .drop.after{display:block;right:-6px}
+
+  /* ---- viewer ---- */
+  #viewer{
+    flex:1 1 auto;overflow:auto;background:var(--ink);
+    display:flex;align-items:center;justify-content:center;padding:24px;min-width:0;
+  }
+  #page{background:var(--paper);box-shadow:0 4px 24px rgba(0,0,0,.55);max-width:100%}
+  #empty{text-align:center;color:var(--muted);line-height:1.9;max-width:340px}
+  #empty strong{display:block;color:var(--text);font-size:15px;margin-bottom:6px}
+  #empty kbd{
+    font-family:var(--mono);font-size:11px;background:var(--panel);
+    border:1px solid var(--edge);border-radius:4px;padding:1px 5px;
+  }
+
+  /* ---- status ---- */
+  .status{
+    flex:0 0 auto;display:flex;gap:14px;align-items:center;
+    padding:6px 12px;background:var(--chrome);border-top:1px solid var(--edge);
+    font-family:var(--mono);font-size:11px;color:var(--muted);
+  }
+  .status .hot{color:var(--accent)}
+  .status .grow{flex:1}
+
+  .drag-over{outline:2px dashed var(--accent);outline-offset:-8px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <span class="title">Pages</span>
+  <button id="btnOpen">開く</button>
+  <button id="btnAdd" disabled>PDFを追加</button>
+  <span class="sep"></span>
+  <button id="btnRotL" disabled>⟲ 左90°</button>
+  <button id="btnRotR" disabled>⟳ 右90°</button>
+  <button id="btnDel" disabled>削除</button>
+  <button id="btnExtract" disabled>抽出</button>
+  <span class="sep"></span>
+  <button id="btnUndo" disabled>元に戻す</button>
+  <button id="btnRedo" disabled>やり直す</button>
+  <span class="sep"></span>
+  <button id="btnPrint" disabled>印刷</button>
+  <button id="btnSave" class="primary" disabled>保存</button>
+</header>
+
+<div class="stage">
+  <aside id="rail">
+    <div class="rail-head">
+      <span id="railCount">0 PAGES</span>
+      <span id="railSel"></span>
+    </div>
+    <div id="thumbs"></div>
+  </aside>
+  <section id="viewer">
+    <div id="empty">
+      <strong>PDFをここにドロップ</strong>
+      左のサムネイルをドラッグして並び替え。<br>
+      Shift / Ctrl+クリックで複数選択、<kbd>Delete</kbd>で削除。<br>
+      元のファイルは変更しません。保存時に書き出します。
+    </div>
+    <canvas id="page" hidden></canvas>
+  </section>
+</div>
+
+<footer class="status">
+  <span id="stFile">ファイル未選択</span>
+  <span id="stPage"></span>
+  <span class="grow"></span>
+  <span id="stMsg"></span>
+</footer>
+
+<input type="file" id="picker" accept="application/pdf" multiple hidden>
+<iframe id="printFrame" hidden style="position:fixed;width:0;height:0;border:0"></iframe>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const $ = id => document.getElementById(id);
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/* ---------- 状態 ----------
+   sources : 読み込んだPDF実体（触らない）
+   order   : 画面に並ぶページの並び。{s:ソース番号, p:元ページ番号0起点, r:追加回転}
+   これだけを操作するので並び替え・削除は一瞬で終わる。
+---------------------------------- */
+const S = {
+  sources: [],
+  order: [],
+  sel: new Set(),
+  cur: 0,
+  undo: [],
+  redo: [],
+  addMode: false,
+};
+
+const thumbCache = new Map();
+let renderTask = null;
+
+/* ---------- ファイル読み込み ---------- */
+async function loadFiles(fileList){
+  const files = [...fileList].filter(f => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
+  if(!files.length) return;
+  msg("読み込み中…");
+  for(const f of files){
+    const buf = new Uint8Array(await f.arrayBuffer());
+    // pdf.js はバッファを worker に転送してしまうので、必ずコピーを渡す
+    const doc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+    const s = S.sources.length;
+    S.sources.push({ name: f.name, bytes: buf, doc, libDoc: null });
+    for(let p = 0; p < doc.numPages; p++) S.order.push({ s, p, r: 0 });
+  }
+  S.sel.clear();
+  S.undo = []; S.redo = [];
+  S.cur = 0;
+  refresh(); showPage(0);
+  msg("");
+}
+
+/* ---------- Undo ---------- */
+function snapshot(){
+  S.undo.push(S.order.map(o => ({...o})));
+  if(S.undo.length > 60) S.undo.shift();
+  S.redo = [];
+}
+function undo(){ if(!S.undo.length) return; S.redo.push(S.order.map(o=>({...o}))); S.order = S.undo.pop(); S.sel.clear(); refresh(); showPage(Math.min(S.cur, S.order.length-1)); }
+function redo(){ if(!S.redo.length) return; S.undo.push(S.order.map(o=>({...o}))); S.order = S.redo.pop(); S.sel.clear(); refresh(); showPage(Math.min(S.cur, S.order.length-1)); }
+
+/* ---------- ページ操作 ---------- */
+function selected(){ return [...S.sel].sort((a,b)=>a-b); }
+function targets(){ return S.sel.size ? selected() : (S.order.length ? [S.cur] : []); }
+
+function deletePages(){
+  const t = targets(); if(!t.length) return;
+  if(t.length === S.order.length){ msg("全ページは削除できません"); return; }
+  snapshot();
+  const kill = new Set(t);
+  S.order = S.order.filter((_,i) => !kill.has(i));
+  S.sel.clear();
+  S.cur = Math.min(t[0], S.order.length - 1);
+  refresh(); showPage(S.cur);
+}
+
+function rotate(deg){
+  const t = targets(); if(!t.length) return;
+  snapshot();
+  t.forEach(i => { S.order[i].r = (S.order[i].r + deg + 360) % 360; });
+  refresh(); showPage(S.cur);
+}
+
+function moveSelectionTo(insertIdx){
+  const sel = selected(); if(!sel.length) return;
+  const items = sel.map(i => S.order[i]);
+  const before = sel.filter(i => i < insertIdx).length;
+  const rest = S.order.filter((_,i) => !S.sel.has(i));
+  rest.splice(insertIdx - before, 0, ...items);
+  snapshot();
+  S.order = rest;
+  S.sel = new Set(items.map(it => S.order.indexOf(it)));
+  S.cur = S.order.indexOf(items[0]);
+  refresh(); showPage(S.cur);
+}
+
+/* ---------- 表示 ---------- */
+function refresh(){
+  const n = S.order.length;
+  $("railCount").textContent = n + " PAGES";
+  $("railSel").textContent = S.sel.size ? S.sel.size + " 選択" : "";
+  const has = n > 0, hasSel = S.sel.size > 0;
+  ["btnAdd","btnRotL","btnRotR","btnDel","btnPrint","btnSave"].forEach(id => $(id).disabled = !has);
+  $("btnExtract").disabled = !hasSel;
+  $("btnUndo").disabled = !S.undo.length;
+  $("btnRedo").disabled = !S.redo.length;
+  $("stFile").textContent = S.sources.length
+    ? S.sources.map((s,i) => (S.sources.length>1 ? LETTERS[i]+" " : "") + s.name).join("  /  ")
+    : "ファイル未選択";
+  buildThumbs();
+}
+
+function buildThumbs(){
+  const box = $("thumbs");
+  box.textContent = "";
+  S.order.forEach((it, i) => {
+    const el = document.createElement("div");
+    el.className = "thumb" + (S.sel.has(i) ? " sel" : "") + (i === S.cur ? " cur" : "");
+    el.draggable = true;
+    el.dataset.i = i;
+    el.innerHTML =
+      '<div class="drop before"></div><div class="drop after"></div>' +
+      '<div class="sheet"></div>' +
+      '<div class="num"><span class="pos">' + (i+1) + '</span>' +
+      '<span class="orig">' + (S.sources.length>1 ? LETTERS[it.s] : "原") + (it.p+1) + '</span>' +
+      (it.r ? '<span class="rot">' + it.r + '°</span>' : '') + '</div>';
+    box.appendChild(el);
+    paintThumb(el, it);
+  });
+}
+
+async function paintThumb(el, it){
+  const key = it.s + ":" + it.p + ":" + it.r;
+  const sheet = el.querySelector(".sheet");
+  if(thumbCache.has(key)){ sheet.innerHTML = '<img src="' + thumbCache.get(key) + '">'; return; }
+  const page = await S.sources[it.s].doc.getPage(it.p + 1);
+  const rot = (page.rotate + it.r) % 360;
+  const base = page.getViewport({ scale: 1, rotation: rot });
+  const vp = page.getViewport({ scale: 190 / base.width, rotation: rot });
+  const cv = document.createElement("canvas");
+  cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+  await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+  const url = cv.toDataURL("image/jpeg", .72);
+  thumbCache.set(key, url);
+  sheet.innerHTML = '<img src="' + url + '">';
+}
+
+async function showPage(i){
+  if(!S.order.length){ $("page").hidden = true; $("empty").hidden = false; $("stPage").textContent = ""; return; }
+  i = Math.max(0, Math.min(i, S.order.length - 1));
+  S.cur = i;
+  $("empty").hidden = true; $("page").hidden = false;
+  $("stPage").textContent = (i+1) + " / " + S.order.length;
+  document.querySelectorAll(".thumb").forEach(t => t.classList.toggle("cur", +t.dataset.i === i));
+
+  const it = S.order[i];
+  const page = await S.sources[it.s].doc.getPage(it.p + 1);
+  const rot = (page.rotate + it.r) % 360;
+  const v1 = page.getViewport({ scale: 1, rotation: rot });
+  const box = $("viewer").getBoundingClientRect();
+  const scale = Math.min((box.width - 56) / v1.width, (box.height - 56) / v1.height);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const vp = page.getViewport({ scale: scale * dpr, rotation: rot });
+
+  const cv = $("page");
+  cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+  cv.style.width = Math.ceil(vp.width / dpr) + "px";
+  cv.style.height = Math.ceil(vp.height / dpr) + "px";
+  if(renderTask) renderTask.cancel();
+  renderTask = page.render({ canvasContext: cv.getContext("2d"), viewport: vp });
+  try{ await renderTask.promise; }catch(e){ /* 連続操作でのキャンセルは無視 */ }
+}
+
+function msg(t){ $("stMsg").textContent = t; }
+
+/* ---------- 選択 ---------- */
+let anchor = 0;
+$("thumbs").addEventListener("click", e => {
+  const el = e.target.closest(".thumb"); if(!el) return;
+  const i = +el.dataset.i;
+  if(e.shiftKey){
+    const [a,b] = [Math.min(anchor,i), Math.max(anchor,i)];
+    S.sel = new Set(); for(let k=a;k<=b;k++) S.sel.add(k);
+  }else if(e.ctrlKey || e.metaKey){
+    S.sel.has(i) ? S.sel.delete(i) : S.sel.add(i); anchor = i;
+  }else{
+    S.sel = new Set([i]); anchor = i;
+  }
+  S.cur = i;
+  refresh(); showPage(i);
+});
+
+/* ---------- ドラッグ並び替え ---------- */
+let dragFrom = null;
+$("thumbs").addEventListener("dragstart", e => {
+  const el = e.target.closest(".thumb"); if(!el) return;
+  dragFrom = +el.dataset.i;
+  if(!S.sel.has(dragFrom)){ S.sel = new Set([dragFrom]); refresh(); }
+  document.querySelectorAll(".thumb").forEach(t => { if(S.sel.has(+t.dataset.i)) t.classList.add("dragging"); });
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", "page");
+});
+$("thumbs").addEventListener("dragover", e => {
+  if(dragFrom === null) return;
+  e.preventDefault();
+  const el = e.target.closest(".thumb");
+  document.querySelectorAll(".thumb").forEach(t => t.classList.remove("drop-before","drop-after"));
+  if(!el) return;
+  const r = el.getBoundingClientRect();
+  el.classList.add(e.clientX < r.left + r.width/2 ? "drop-before" : "drop-after");
+});
+$("thumbs").addEventListener("drop", e => {
+  if(dragFrom === null) return;
+  e.preventDefault();
+  const el = e.target.closest(".thumb");
+  if(el){
+    const r = el.getBoundingClientRect();
+    const i = +el.dataset.i;
+    moveSelectionTo(e.clientX < r.left + r.width/2 ? i : i + 1);
+  }
+  cleanDrag();
+});
+$("thumbs").addEventListener("dragend", cleanDrag);
+function cleanDrag(){
+  dragFrom = null;
+  document.querySelectorAll(".thumb").forEach(t => t.classList.remove("dragging","drop-before","drop-after"));
+}
+
+/* ---------- 書き出し ---------- */
+async function libDocOf(i){
+  const s = S.sources[i];
+  if(!s.libDoc) s.libDoc = await PDFLib.PDFDocument.load(s.bytes);
+  return s.libDoc;
+}
+async function buildPdf(items){
+  const out = await PDFLib.PDFDocument.create();
+  for(const it of items){
+    const src = await libDocOf(it.s);
+    const [pg] = await out.copyPages(src, [it.p]);
+    if(it.r) pg.setRotation(PDFLib.degrees((pg.getRotation().angle + it.r) % 360));
+    out.addPage(pg);
+  }
+  return out.save();
+}
+async function saveBytes(bytes, name){
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  if(window.showSaveFilePicker){
+    try{
+      const h = await showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: "PDF", accept: { "application/pdf": [".pdf"] } }]
+      });
+      const w = await h.createWritable();
+      await w.write(blob); await w.close();
+      return true;
+    }catch(err){
+      if(err.name === "AbortError") return false;
+      // 権限が無い環境ではダウンロードにフォールバック
+    }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return true;
+}
+function baseName(){
+  const n = S.sources[0] ? S.sources[0].name.replace(/\.pdf$/i, "") : "document";
+  return n;
+}
+
+/* ---------- ボタン ---------- */
+$("btnOpen").onclick = () => { S.addMode = false; $("picker").click(); };
+$("btnAdd").onclick  = () => { S.addMode = true;  $("picker").click(); };
+$("picker").onchange = async e => {
+  const files = e.target.files;
+  if(S.addMode){
+    snapshot();
+    const at = S.sel.size ? Math.max(...selected()) + 1 : S.order.length;
+    const keep = S.order;
+    S.order = [];
+    const before = S.undo.length;
+    await loadFiles(files);          // 追加分が S.order に入る
+    const added = S.order;
+    S.order = keep.slice(0, at).concat(added, keep.slice(at));
+    S.undo.length = before;          // loadFiles が消した履歴を戻す
+    refresh(); showPage(at);
+  }else{
+    S.sources = []; S.order = []; thumbCache.clear();
+    await loadFiles(files);
+  }
+  e.target.value = "";
+};
+$("btnRotL").onclick = () => rotate(-90);
+$("btnRotR").onclick = () => rotate(90);
+$("btnDel").onclick = deletePages;
+$("btnUndo").onclick = undo;
+$("btnRedo").onclick = redo;
+
+$("btnExtract").onclick = async () => {
+  const t = selected(); if(!t.length) return;
+  msg("抽出中…");
+  const bytes = await buildPdf(t.map(i => S.order[i]));
+  await saveBytes(bytes, baseName() + "_抽出" + t.length + "p.pdf");
+  msg("");
+};
+$("btnSave").onclick = async () => {
+  msg("書き出し中…");
+  const bytes = await buildPdf(S.order);
+  const ok = await saveBytes(bytes, baseName() + "_編集.pdf");
+  msg(ok ? "保存しました" : "");
+  setTimeout(() => msg(""), 2000);
+};
+$("btnPrint").onclick = async () => {
+  msg("印刷準備中…");
+  const bytes = await buildPdf(S.order);
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+  const f = $("printFrame");
+  f.hidden = false;
+  f.onload = () => { try{ f.contentWindow.print(); }catch(e){ window.open(url); } msg(""); };
+  f.src = url;
+};
+
+/* ---------- キーボード ---------- */
+document.addEventListener("keydown", e => {
+  const mod = e.ctrlKey || e.metaKey;
+  if(mod && e.key.toLowerCase() === "z"){ e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if(mod && e.key.toLowerCase() === "y"){ e.preventDefault(); redo(); return; }
+  if(mod && e.key.toLowerCase() === "a"){ e.preventDefault(); S.sel = new Set(S.order.map((_,i)=>i)); refresh(); return; }
+  if(mod && e.key.toLowerCase() === "s"){ e.preventDefault(); $("btnSave").click(); return; }
+  if(mod && e.key.toLowerCase() === "p"){ e.preventDefault(); $("btnPrint").click(); return; }
+  if(e.key === "Delete" || e.key === "Backspace"){ e.preventDefault(); deletePages(); return; }
+  if(e.key === "ArrowRight" || e.key === "ArrowDown"){ e.preventDefault(); showPage(S.cur + 1); }
+  if(e.key === "ArrowLeft"  || e.key === "ArrowUp"){ e.preventDefault(); showPage(S.cur - 1); }
+});
+
+/* ---------- ファイルのドロップ ---------- */
+document.addEventListener("dragover", e => {
+  if(dragFrom !== null) return;
+  e.preventDefault(); document.body.classList.add("drag-over");
+});
+document.addEventListener("dragleave", e => { if(e.relatedTarget === null) document.body.classList.remove("drag-over"); });
+document.addEventListener("drop", async e => {
+  document.body.classList.remove("drag-over");
+  if(dragFrom !== null) return;
+  if(!e.dataTransfer.files.length) return;
+  e.preventDefault();
+  S.sources = []; S.order = []; thumbCache.clear();
+  await loadFiles(e.dataTransfer.files);
+});
+
+let rt;
+window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => showPage(S.cur), 150); });
+refresh();
+</script>
+</body>
+</html>
