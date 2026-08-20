@@ -167,6 +167,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -394,6 +395,30 @@ async function libDocOf(i){
   if(!s.libDoc) s.libDoc = await PDFLib.PDFDocument.load(s.bytes);
   return s.libDoc;
 }
+
+/* ---------- 日本語フォント（Noto Sans JP, サブセット埋め込み） ----------
+   書き込みレイヤー（今後実装するテキスト注釈）から drawText({ font: jpFont }) の形で使う想定。
+   index.html は file:// 直開き運用（README参照）のため、フォントはローカル同梱ではなく
+   CDN（Google Fonts / gstatic, CORS許可済み）から初回のみ取得しメモリキャッシュする。
+   pdf.js/pdf-lib同様にバージョン（ファイルハッシュ）を固定し、挙動が変わらないようにしている。
+------------------------------------------------------------------------- */
+const JP_FONT_URL = "https://fonts.gstatic.com/s/notosansjp/v56/-F6jfjtqLzI2JPCgQBnw7HFyzSD-AsregP8VFBEj75s.ttf";
+let jpFontBytesPromise = null;
+function getJpFontBytes(){
+  if(!jpFontBytesPromise){
+    jpFontBytesPromise = fetch(JP_FONT_URL)
+      .then(r => { if(!r.ok) throw new Error("HTTP " + r.status); return r.arrayBuffer(); })
+      .catch(err => { jpFontBytesPromise = null; throw err; });
+  }
+  return jpFontBytesPromise;
+}
+async function embedJpFont(pdfDoc){
+  pdfDoc.registerFontkit(fontkit);
+  const bytes = await getJpFontBytes();
+  // subset必須（付けないと数MB膨らむ）。実際に描画された文字のグリフだけが埋め込まれる。
+  return pdfDoc.embedFont(bytes, { subset: true });
+}
+
 async function buildPdf(items){
   const out = await PDFLib.PDFDocument.create();
   for(const it of items){
