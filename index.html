@@ -188,29 +188,82 @@ const S = {
   undo: [],
   redo: [],
   addMode: false,
+  dirty: false,   // 保存していない編集があるか
 };
 
 const thumbCache = new Map();
 let renderTask = null;
 
-/* ---------- ファイル読み込み ---------- */
-async function loadFiles(fileList){
-  const files = [...fileList].filter(f => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
-  if(!files.length) return;
-  msg("読み込み中…");
+/* ---------- ファイル読み込み ----------
+   readFiles は「ソースに登録して、読めたページ配列を返す」ことだけを行う。
+   S.order・履歴・選択の書き換えは openFiles / addFiles 側に集約する。
+   （両方を1つの関数でやると、追加時に履歴を捨てたり戻したりが必要になり壊れる）
+------------------------------------------- */
+function pdfFilesOf(fileList){
+  return [...fileList].filter(f => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
+}
+
+function reasonOf(err){
+  const n = err && err.name;
+  if(n === "PasswordException")   return "パスワード付きPDFには対応していません";
+  if(n === "InvalidPDFException") return "PDFとして読めません";
+  return (err && err.message) || "読み込みに失敗しました";
+}
+
+async function readFiles(files){
+  const pages = [], failed = [];
   for(const f of files){
-    const buf = new Uint8Array(await f.arrayBuffer());
-    // pdf.js はバッファを worker に転送してしまうので、必ずコピーを渡す
-    const doc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
-    const s = S.sources.length;
-    S.sources.push({ name: f.name, bytes: buf, doc, libDoc: null });
-    for(let p = 0; p < doc.numPages; p++) S.order.push({ s, p, r: 0 });
+    msg("読み込み中… " + f.name);
+    try{
+      const buf = new Uint8Array(await f.arrayBuffer());
+      // pdf.js はバッファを worker に転送してしまうので、必ずコピーを渡す
+      const doc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+      const s = S.sources.length;
+      S.sources.push({ name: f.name, bytes: buf, doc, libDoc: null });
+      for(let p = 0; p < doc.numPages; p++) pages.push({ s, p, r: 0 });
+    }catch(err){
+      // 1つ失敗しても残りは開く
+      failed.push(f.name + "（" + reasonOf(err) + "）");
+    }
   }
-  S.sel.clear();
-  S.undo = []; S.redo = [];
-  S.cur = 0;
+  return { pages, failed };
+}
+
+function report(failed, okCount){
+  msg(!failed.length ? ""
+    : (okCount ? "一部読み込めませんでした: " : "読み込めませんでした: ") + failed.join(" / "));
+}
+
+function confirmDiscard(){
+  return !S.dirty || confirm("保存していない編集があります。破棄してよろしいですか？");
+}
+
+async function openFiles(fileList){
+  const files = pdfFilesOf(fileList);
+  if(!files.length){ msg("PDFファイルがありません"); return; }
+  if(!confirmDiscard()) return;
+  S.sources = []; S.order = []; S.sel.clear();
+  S.undo = []; S.redo = []; S.cur = 0;
+  thumbCache.clear();
+  const { pages, failed } = await readFiles(files);
+  S.order = pages;
+  S.dirty = false;                    // 開いた直後は未編集
   refresh(); showPage(0);
-  msg("");
+  report(failed, pages.length);
+}
+
+async function addFiles(fileList){
+  const files = pdfFilesOf(fileList);
+  if(!files.length){ msg("PDFファイルがありません"); return; }
+  const at = S.sel.size ? Math.max(...selected()) + 1 : S.order.length;
+  const { pages, failed } = await readFiles(files);
+  if(pages.length){
+    snapshot();                       // 読み込みが成功してから履歴を積む
+    S.order = S.order.slice(0, at).concat(pages, S.order.slice(at));
+    S.sel.clear();
+    refresh(); showPage(at);
+  }
+  report(failed, pages.length);
 }
 
 /* ---------- Undo ---------- */
@@ -218,6 +271,7 @@ function snapshot(){
   S.undo.push(S.order.map(o => ({...o})));
   if(S.undo.length > 60) S.undo.shift();
   S.redo = [];
+  S.dirty = true;   // 編集はすべて snapshot() を通るので、ここ1箇所で足りる
 }
 function undo(){ if(!S.undo.length) return; S.redo.push(S.order.map(o=>({...o}))); S.order = S.undo.pop(); S.sel.clear(); refresh(); showPage(Math.min(S.cur, S.order.length-1)); }
 function redo(){ if(!S.redo.length) return; S.undo.push(S.order.map(o=>({...o}))); S.order = S.redo.pop(); S.sel.clear(); refresh(); showPage(Math.min(S.cur, S.order.length-1)); }
@@ -462,22 +516,9 @@ $("btnOpen").onclick = () => { S.addMode = false; $("picker").click(); };
 $("btnAdd").onclick  = () => { S.addMode = true;  $("picker").click(); };
 $("picker").onchange = async e => {
   const files = e.target.files;
-  if(S.addMode){
-    snapshot();
-    const at = S.sel.size ? Math.max(...selected()) + 1 : S.order.length;
-    const keep = S.order;
-    S.order = [];
-    const before = S.undo.length;
-    await loadFiles(files);          // 追加分が S.order に入る
-    const added = S.order;
-    S.order = keep.slice(0, at).concat(added, keep.slice(at));
-    S.undo.length = before;          // loadFiles が消した履歴を戻す
-    refresh(); showPage(at);
-  }else{
-    S.sources = []; S.order = []; thumbCache.clear();
-    await loadFiles(files);
-  }
-  e.target.value = "";
+  e.target.value = "";              // 同じファイルを続けて選べるよう先に空にする
+  if(S.addMode) await addFiles(files);
+  else          await openFiles(files);
 };
 $("btnRotL").onclick = () => rotate(-90);
 $("btnRotR").onclick = () => rotate(90);
@@ -488,26 +529,42 @@ $("btnRedo").onclick = redo;
 $("btnExtract").onclick = async () => {
   const t = selected(); if(!t.length) return;
   msg("抽出中…");
-  const bytes = await buildPdf(t.map(i => S.order[i]));
-  await saveBytes(bytes, baseName() + "_抽出" + t.length + "p.pdf");
-  msg("");
+  try{
+    const bytes = await buildPdf(t.map(i => S.order[i]));
+    await saveBytes(bytes, baseName() + "_抽出" + t.length + "p.pdf");
+    msg("");
+  }catch(err){ msg("抽出に失敗しました: " + reasonOf(err)); }
 };
 $("btnSave").onclick = async () => {
   msg("書き出し中…");
-  const bytes = await buildPdf(S.order);
-  const ok = await saveBytes(bytes, baseName() + "_編集.pdf");
-  msg(ok ? "保存しました" : "");
-  setTimeout(() => msg(""), 2000);
+  try{
+    const bytes = await buildPdf(S.order);
+    const ok = await saveBytes(bytes, baseName() + "_編集.pdf");
+    if(ok){ S.dirty = false; msg("保存しました"); setTimeout(() => msg(""), 2000); }
+    else msg("");
+  }catch(err){ msg("保存に失敗しました: " + reasonOf(err)); }
 };
+
+// 直前の印刷用blobURL。次に印刷する時に解放する（出しっぱなしだと印刷のたびに漏れる）
+let printUrl = null;
 $("btnPrint").onclick = async () => {
   msg("印刷準備中…");
-  const bytes = await buildPdf(S.order);
-  const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+  if(printUrl){ URL.revokeObjectURL(printUrl); printUrl = null; }
+  let url;
+  try{
+    const bytes = await buildPdf(S.order);
+    url = printUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+  }catch(err){ msg("印刷の準備に失敗しました: " + reasonOf(err)); return; }
   const f = $("printFrame");
   f.hidden = false;
-  f.onload = () => { try{ f.contentWindow.print(); }catch(e){ window.open(url); } msg(""); };
+  f.onload = () => {
+    // Firefox など iframe から print() できない環境では別タブで開く
+    try{ f.contentWindow.print(); }catch(e){ window.open(url, "_blank"); }
+    msg("");
+  };
   f.src = url;
 };
+window.addEventListener("pagehide", () => { if(printUrl) URL.revokeObjectURL(printUrl); });
 
 /* ---------- キーボード ---------- */
 document.addEventListener("keydown", e => {
@@ -533,8 +590,13 @@ document.addEventListener("drop", async e => {
   if(dragFrom !== null) return;
   if(!e.dataTransfer.files.length) return;
   e.preventDefault();
-  S.sources = []; S.order = []; thumbCache.clear();
-  await loadFiles(e.dataTransfer.files);
+  await openFiles(e.dataTransfer.files);   // 破棄の確認は openFiles 側で行う
+});
+
+window.addEventListener("beforeunload", e => {
+  if(!S.dirty) return;
+  e.preventDefault();
+  e.returnValue = "";   // 一部ブラウザはこれが無いと確認ダイアログを出さない
 });
 
 let rt;

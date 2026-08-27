@@ -7,12 +7,14 @@ Mac の「プレビュー」的な使い勝手を Windows / Web で。
 
 `index.html` をダブルクリックして Chrome か Edge で開くだけ（ビルド不要）。
 
+ロジックの回帰テストは `node tests/logic.test.mjs`（依存なし・ブラウザ不要）。
+
 ## 現状（v0.1）
 
 - [x] 表示（pdf.js）
 - [x] サムネイル並び替え（複数選択＋ドラッグ）
 - [x] 削除 / 回転 / 別PDF追加 / 抽出
-- [x] Undo / Redo ※「PDFを追加」を挟むと壊れる不具合あり（`PLAN.md` B-1）
+- [x] Undo / Redo
 - [x] 保存（File System Access API、非対応環境はダウンロードに自動フォールバック）
 - [x] 印刷
 - [ ] 文字・図形の書き込み（次段階）
